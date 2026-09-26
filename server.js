@@ -296,7 +296,10 @@ server.on("connection", socket => {
         }
         if (message.type === "match_shot" && match) broadcastMatch(match, { type: "match_shot", shot: { ...message, id: client.id, team: match.players.get(client.id)?.team } });
         if (message.type === "match_ai_shot" && match?.hostId === client.id) broadcastMatch(match, { type: "match_ai_shot", shot: message.shot });
-        if (message.type === "match_loot_state" && match?.hostId === client.id) broadcastMatch(match, { type: "match_loot_state", loot: message.loot || [] });
+        if (message.type === "match_loot_state" && match?.hostId === client.id) {
+            const loot = (Array.isArray(message.loot) ? message.loot : []).filter(item => item?.id && !match.claimedLoot.has(String(item.id)));
+            broadcastMatch(match, { type: "match_loot_state", loot });
+        }
         if (message.type === "match_loot_take" && match) {
             const player = match.players.get(client.id), lootId = String(message.id || "");
             if (player && lootId && !match.claimedLoot.has(lootId) && Math.hypot(player.x - Number(message.x), player.y - Number(message.y)) < 80) { match.claimedLoot.add(lootId); broadcastMatch(match, { type: "match_loot_taken", id: lootId, by: client.id }); }
