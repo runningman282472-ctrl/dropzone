@@ -1,7 +1,17 @@
 const WebSocket = require("ws");
+const http = require("node:http");
 
 const PORT = process.env.PORT || 8080;
-const server = new WebSocket.Server({ port: PORT });
+const httpServer = http.createServer((request, response) => {
+    if (request.url === "/health") {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ status: "ok" }));
+        return;
+    }
+    response.writeHead(404, { "Content-Type": "text/plain" });
+    response.end("Not found");
+});
+const server = new WebSocket.Server({ server: httpServer });
 const parties = new Map();
 const clients = new Map();
 const matches = new Map();
@@ -220,4 +230,6 @@ server.on("connection", (socket) => {
     });
 });
 
-console.log(`Server running on port ${PORT}`);
+httpServer.listen(PORT, "0.0.0.0", () => {
+    console.log(`Dropzone WebSocket server listening on port ${PORT}`);
+});
