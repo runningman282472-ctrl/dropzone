@@ -46,6 +46,11 @@ function clientById(id) {
     return [...clients.values()].find(client => client.id === id);
 }
 
+function broadcastOnlineCount() {
+    const onlineUsers = new Set([...clients.values()].map(client => client.id)).size;
+    for (const client of clients.values()) send(client.socket, { type: "online_count", count: onlineUsers });
+}
+
 function seededRandom(seed) {
     let value = seed >>> 0;
     return () => { value = (value * 1664525 + 1013904223) >>> 0; return value / 4294967296; };
@@ -224,6 +229,7 @@ server.on("connection", socket => {
             client.stats = saved.stats;
             accounts.set(client.id, { ...saved, id: client.id, name: client.name });
             send(socket, { type: "account_state", ...accounts.get(client.id) });
+            broadcastOnlineCount();
         }
         if (message.type === "party_create") {
             leaveParty(socket, false);
@@ -302,7 +308,7 @@ server.on("connection", socket => {
         }
         if (message.type === "party_chat" && client.party) for (const id of parties.get(client.party)?.members || []) send(clientById(id)?.socket, { type: "party_chat", from: client.name, text: String(message.text || "").slice(0, 160) });
     });
-    socket.on("close", () => { const client = clients.get(socket); if (client) { leaveParty(socket, false); if (client.match) { const match = matches.get(client.match); match?.members.delete(client.id); match?.players.delete(client.id); if (match) finishMatch(match); } clients.delete(socket); } });
+    socket.on("close", () => { const client = clients.get(socket); if (client) { leaveParty(socket, false); if (client.match) { const match = matches.get(client.match); match?.members.delete(client.id); match?.players.delete(client.id); if (match) finishMatch(match); } clients.delete(socket); broadcastOnlineCount(); } });
 });
 
 httpServer.listen(PORT, "0.0.0.0", () => console.log(`Dropzone server listening on ${PORT}`));
