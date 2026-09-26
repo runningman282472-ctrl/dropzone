@@ -40,6 +40,24 @@ function generateHouses() {
     return buildings;
 }
 const houses = generateHouses();
+function generateProps(buildings) {
+    const random = seededRandom(771903);
+    const props = [];
+    for (let i = 0; i < 110; i += 1) {
+        const kind = ["tree", "bush", "rock", "crate"][i % 4];
+        const radius = kind === "tree" ? 23 : kind === "bush" ? 19 : kind === "rock" ? 17 : 15;
+        let item;
+        for (let attempt = 0; attempt < 80; attempt += 1) {
+            item = { kind, x: 80 + random() * (4200 - 160), y: 80 + random() * (2800 - 160), r: radius };
+            const nearBuilding = buildings.some(building => item.x > building.x - 30 && item.x < building.x + building.w + 30 && item.y > building.y - 30 && item.y < building.y + building.h + 30);
+            const nearProp = props.some(prop => Math.hypot(item.x - prop.x, item.y - prop.y) < radius + prop.r + 16);
+            if (!nearBuilding && !nearProp) break;
+        }
+        props.push(item);
+    }
+    return props;
+}
+const props = generateProps(houses);
 
 function send(socket, payload) {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
@@ -62,6 +80,8 @@ function accountSnapshot(client) {
         id: client.id,
         name: client.name,
         friends: client.friends || [],
+        friendRequests: client.friendRequests || [],
+        friendRequests: client.friendRequests || [],
         stats: client.stats || { matches: 0, kills: 0, wins: 0 }
     };
 }
@@ -123,8 +143,6 @@ function joinParty(socket, code) {
     client.party = code;
     party.teams ||= new Map();
     if (!party.teams.has(client.id)) party.teams.set(client.id, 0);
-    party.teams ||= new Map();
-    if (!party.teams.has(client.id)) party.teams.set(client.id, party.teams.size % 2);
     partyState(code);
 }
 
@@ -139,8 +157,9 @@ function spawnPoint(index, total) {
         const angle = (Math.PI * 2 * (index + attempt * 0.37)) / Math.max(1, total);
         const x = 2100 + Math.cos(angle) * (1350 + attempt * 8);
         const y = 1400 + Math.sin(angle) * (950 + attempt * 6);
-        const blocked = houses.some((house) => x > house.x - 34 && x < house.x + house.w + 34 && y > house.y - 34 && y < house.y + house.h + 34);
-        if (!blocked && x > 50 && x < 4150 && y > 50 && y < 2750) return { x, y };
+        const blockedBuilding = houses.some((house) => x > house.x - 34 && x < house.x + house.w + 34 && y > house.y - 34 && y < house.y + house.h + 34);
+        const blockedProp = props.some(prop => Math.hypot(x - prop.x, y - prop.y) < prop.r + 34 || (prop.kind === "crate" && Math.abs(x - prop.x) < 44 && Math.abs(y - prop.y) < 44));
+        if (!blockedBuilding && !blockedProp && x > 50 && x < 4150 && y > 50 && y < 2750) return { x, y };
     }
     return { x: 2100, y: 1400 };
 }
@@ -228,11 +247,12 @@ server.on("connection", (socket) => {
                 if (previous && previous !== client) previous.socket.close(4001, "Account connected elsewhere");
                 client.id = requestedId;
             }
-            const saved = accounts.get(client.id) || { id: client.id, name: "ANONYMOUS", friends: [], stats: { matches: 0, kills: 0, wins: 0 } };
+            const saved = accounts.get(client.id) || { id: client.id, name: "ANONYMOUS", friends: [], friendRequests: [], stats: { matches: 0, kills: 0, wins: 0 } };
             client.name = String(message.name || saved.name || "ANONYMOUS").slice(0, 14).toUpperCase();
-            client.friends = Array.isArray(message.friends) ? [...new Set(message.friends.map(friend => typeof friend === "string" ? friend : String(friend?.id || "")).filter(Boolean))].slice(0, 500) : saved.friends;
+            client.friends = saved.friends || [];
+            client.friendRequests = saved.friendRequests || [];
             client.stats = saved.stats;
-            accounts.set(client.id, { id: client.id, name: client.name, friends: client.friends, stats: client.stats });
+            accounts.set(client.id, { ...saved, id: client.id, name: client.name, friends: client.friends, friendRequests: client.friendRequests, stats: client.stats });
             persistAccounts();
             send(socket, accountSnapshot(client));
             for (const friendId of client.friends) {
@@ -257,21 +277,58 @@ server.on("connection", (socket) => {
             const friendId = String(message.id || "");
             if (!accounts.has(friendId) || friendId === client.id) {
                 send(socket, { type: "friend_error", message: "Player ID not found." });
+            } else if ((client.friends || []).includes(friendId)) {
+                send(socket, { type: "friend_error", message: "Already friends." });
             } else {
-                client.friends = [...new Set([...(client.friends || []), friendId])];
-                accounts.set(client.id, { id: client.id, name: client.name, friends: client.friends, stats: client.stats });
+                const targetAccount = accounts.get(friendId);
+                targetAccount.friendRequests ||= [];
+                if (!targetAccount.friendRequests.some(request => request.id === client.id)) targetAccount.friendRequests.push({ id: client.id, name: client.name });
+                client.outgoingRequests ||= [];
+                if (!client.outgoingRequests.includes(friendId)) client.outgoingRequests.push(friendId);
+                accounts.set(client.id, { ...accounts.get(client.id), id: client.id, name: client.name, friends: client.friends, outgoingRequests: client.outgoingRequests, stats: client.stats });
                 persistAccounts();
                 const friend = clientById(friendId);
-                send(socket, { type: "friend_added", friend: { id: friendId, name: friend?.name || accounts.get(friendId).name, online: Boolean(friend) } });
-                if (friend) send(friend.socket, { type: "friend_presence", id: client.id, name: client.name, online: true });
+                if (friend) { friend.friendRequests = targetAccount.friendRequests; send(friend.socket, { type: "friend_request", request: { id: client.id, name: client.name } }); }
+                send(socket, { type: "friend_request_sent", id: friendId, name: targetAccount.name });
             }
+        }
+        if (message.type === "friend_accept" || message.type === "friend_decline") {
+            const friendId = String(message.id || "");
+            const account = accounts.get(client.id);
+            const requests = account?.friendRequests || [];
+            const request = requests.find(entry => entry.id === friendId);
+            if (!request) return send(socket, { type: "friend_error", message: "Friend request not found." });
+            account.friendRequests = requests.filter(entry => entry.id !== friendId);
+            client.friendRequests = account.friendRequests;
+            const requesterAccount = accounts.get(friendId);
+            if (requesterAccount) requesterAccount.outgoingRequests = (requesterAccount.outgoingRequests || []).filter(id => id !== client.id);
+            if (message.type === "friend_accept") {
+                client.friends = [...new Set([...(client.friends || []), friendId])];
+                account.friends = client.friends;
+                if (requesterAccount) requesterAccount.friends = [...new Set([...(requesterAccount.friends || []), client.id])];
+                const requester = clientById(friendId);
+                if (requester) { requester.friends = requesterAccount.friends; send(requester.socket, { type: "friend_added", friend: { id: client.id, name: client.name, online: true } }); }
+                send(socket, { type: "friend_added", friend: { id: friendId, name: request.name, online: Boolean(requester) } });
+                if (requester) send(requester.socket, { type: "friend_presence", id: client.id, name: client.name, online: true });
+                notifyFriends(client);
+            } else {
+                send(socket, { type: "friend_request_declined", id: friendId });
+            }
+            persistAccounts();
+            const requester = clientById(friendId);
+            if (requester) send(requester.socket, { type: message.type === "friend_accept" ? "friend_request_accepted" : "friend_request_declined", id: client.id, name: client.name });
         }
         if (message.type === "friend_remove") {
             const friendId = String(message.id || "");
             client.friends = (client.friends || []).filter((id) => id !== friendId);
-            accounts.set(client.id, { id: client.id, name: client.name, friends: client.friends, stats: client.stats });
+            accounts.set(client.id, { ...accounts.get(client.id), id: client.id, name: client.name, friends: client.friends, stats: client.stats });
+            const friendAccount = accounts.get(friendId);
+            if (friendAccount) friendAccount.friends = (friendAccount.friends || []).filter((id) => id !== client.id);
+            const friend = clientById(friendId);
+            if (friend) friend.friends = (friend.friends || []).filter((id) => id !== client.id);
             persistAccounts();
             send(socket, { type: "friend_removed", id: friendId });
+            if (friend) send(friend.socket, { type: "friend_removed", id: client.id });
         }
         if (message.type === "party_invite") {
             const friendId = String(message.id || "");
@@ -447,10 +504,6 @@ server.on("connection", (socket) => {
         removeFromParty(socket);
         clients.delete(socket);
     });
-});
-
-httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`Dropzone WebSocket server listening on port ${PORT}`);
 });
 
 httpServer.listen(PORT, "0.0.0.0", () => {
