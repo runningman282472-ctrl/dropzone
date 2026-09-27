@@ -106,7 +106,7 @@ function partySnapshot(code) {
     if (!party) return;
     const members = [...party.members].map(id => {
         const player = clientById(id);
-        return { id, name: player?.name || accounts.get(id)?.name || "ANONYMOUS", online: Boolean(player), team: party.teams.get(id) || 0 };
+        return { id, name: player?.name || accounts.get(id)?.name || "ANONYMOUS", online: Boolean(player), team: party.teams.get(id) ?? 0 };
     });
     members.forEach(member => send(clientById(member.id)?.socket, {
         type: "party_state", code, host: party.host, clientId: member.id, rounds: party.rounds, members
@@ -145,7 +145,7 @@ function startMatch(selected, partyOnly = false) {
         const spawn = spawnPoint(usedSpawns); usedSpawns.push(spawn);
         return {
         id: client.id, name: client.name,
-        team: client.party && parties.has(client.party) ? `${client.party}:${parties.get(client.party).teams.get(client.id) || 0}` : client.id,
+        team: client.party && parties.has(client.party) ? `${client.party}:${parties.get(client.party).teams.get(client.id) ?? 0}` : client.id,
         ...spawn
     }; });
     const aiCount = partyOnly ? 0 : Math.min(MAX_AI, MAX_PLAYERS - selected.length);
@@ -251,9 +251,16 @@ server.on("connection", socket => {
         }
         if (message.type === "party_settings" && client.party) {
             const party = parties.get(client.party);
-            if (party?.host === client.id && [1, 3, 5].includes(Number(message.rounds))) {
-                party.rounds = Number(message.rounds);
-                for (const id of party.members) party.teams.set(id, Number(message.teams?.[id]) === 1 ? 1 : 0);
+            if (party?.host === client.id) {
+                const rounds = Number(message.rounds);
+                if ([1, 3, 5].includes(rounds)) party.rounds = rounds;
+                if (message.teams && typeof message.teams === "object") {
+                    for (const id of party.members) {
+                        if (!Object.hasOwn(message.teams, id)) continue;
+                        const team = Number(message.teams[id]);
+                        if (Number.isInteger(team) && team >= 0 && team <= 3) party.teams.set(id, team);
+                    }
+                }
                 partySnapshot(client.party);
             }
         }
